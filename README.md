@@ -10,6 +10,7 @@ Hair Doctor AI is a Streamlit hair and scalp screening app with:
 - No login required
 - Suggested deficiency/thyroid test checklist to discuss with a doctor
 - Lab report upload for possible deficiency-pattern review
+- Downloadable doctor visit summary as PDF or text
 
 This is informational screening only. It is not a medical diagnosis, prescription, or replacement for a dermatologist or qualified clinician.
 The app does not tell users to start medicines. It asks users to consult a dermatologist or qualified clinician before using medicines, supplements, or medicated treatments.
