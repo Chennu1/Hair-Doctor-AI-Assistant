@@ -5,3 +5,4 @@ altair>=5.0.0
 langgraph>=0.2.60
 langchain-core>=0.3.0
 pillow>=10.0.0
+pypdf>=5.0.0

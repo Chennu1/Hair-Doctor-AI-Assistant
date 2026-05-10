@@ -7,7 +7,15 @@ from dataclasses import asdict
 import streamlit as st
 from PIL import Image, ImageStat, UnidentifiedImageError
 
-from hair_analysis import AnalysisResult, UserProfile, analyze_hair_case, answer_follow_up
+from hair_analysis import (
+    AnalysisResult,
+    LabReportResult,
+    UserProfile,
+    analyze_hair_case,
+    analyze_lab_report,
+    answer_follow_up,
+    RECOMMENDED_TESTS,
+)
 from hair_store import init_store, recent_consultations, save_consultation, upsert_user
 
 
@@ -73,6 +81,8 @@ def render_shell(user: dict[str, str]) -> None:
 
     if st.session_state.get("last_result"):
         render_result(AnalysisResult(**st.session_state["last_result"]))
+        render_tests_panel()
+        render_lab_report_panel()
         render_follow_up_chat()
 
     render_history(user)
@@ -263,6 +273,72 @@ def render_follow_up_chat() -> None:
                 answer = answer_follow_up(profile, result, prompt, messages)
             st.write(answer)
         messages.append({"role": "assistant", "content": answer})
+
+
+def render_tests_panel() -> None:
+    st.markdown('<div class="section-title">Tests To Discuss With A Doctor</div>', unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class="chat-intro">
+          These tests can help a doctor check common deficiency, thyroid, and metabolic patterns linked with shedding. Do not start supplements based only on screening.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    cols = st.columns(2)
+    midpoint = (len(RECOMMENDED_TESTS) + 1) // 2
+    with cols[0]:
+        render_list("Common Basics", RECOMMENDED_TESTS[:midpoint])
+    with cols[1]:
+        render_list("Context Based", RECOMMENDED_TESTS[midpoint:])
+
+
+def render_lab_report_panel() -> None:
+    st.markdown('<div class="section-title">Upload Test Report</div>', unsafe_allow_html=True)
+    report_file = st.file_uploader(
+        "Upload lab report PDF, image, or text file",
+        type=["pdf", "png", "jpg", "jpeg", "txt"],
+        key="lab_report_upload",
+    )
+    if report_file is None:
+        st.caption("After doing tests, upload the report here. The app will look for possible deficiency patterns, not diagnose the exact cause.")
+        return
+
+    if st.button("Review Test Report", use_container_width=True):
+        profile = UserProfile(**st.session_state["last_profile"])
+        result = AnalysisResult(**st.session_state["last_result"])
+        with st.spinner("Reviewing report values..."):
+            lab_result = analyze_lab_report(
+                profile,
+                result,
+                report_file.name,
+                report_file.getvalue(),
+                report_file.type,
+            )
+        st.session_state["last_lab_result"] = asdict(lab_result)
+
+    if st.session_state.get("last_lab_result"):
+        render_lab_result(LabReportResult(**st.session_state["last_lab_result"]))
+
+
+def render_lab_result(lab_result: LabReportResult) -> None:
+    st.markdown(
+        f"""
+        <div class="summary-card">
+          <span>Report Review</span>
+          <p>{html.escape(lab_result.summary)}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        render_list("Possible Findings", lab_result.possible_findings)
+    with c2:
+        render_list("Ask Your Doctor", lab_result.doctor_discussion)
+    with c3:
+        render_list("Still Missing", lab_result.missing_tests or ["No key missing tests detected from the readable report."])
+    st.caption(lab_result.disclaimer)
 
 
 def render_list(title: str, items: list[str]) -> None:

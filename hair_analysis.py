@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
+from io import BytesIO
 from dataclasses import asdict, dataclass
 from typing import Any, TypedDict
 
@@ -48,6 +50,27 @@ class AnalysisResult:
     summary: str
     disclaimer: str
     analysis_engine: str
+
+
+@dataclass
+class LabReportResult:
+    possible_findings: list[str]
+    doctor_discussion: list[str]
+    missing_tests: list[str]
+    summary: str
+    disclaimer: str
+
+
+RECOMMENDED_TESTS = [
+    "CBC with hemoglobin",
+    "Ferritin and iron profile",
+    "Vitamin D",
+    "Vitamin B12",
+    "TSH / thyroid profile",
+    "Zinc",
+    "Fasting glucose or HbA1c if clinically relevant",
+    "Hormonal tests only if advised by a doctor, especially for irregular periods, acne, or excess facial hair",
+]
 
 
 class AnalysisState(TypedDict, total=False):
@@ -121,6 +144,178 @@ def answer_follow_up(
         except Exception:
             pass
     return heuristic_follow_up(profile, result, question)
+
+
+def analyze_lab_report(
+    profile: UserProfile,
+    result: AnalysisResult,
+    file_name: str,
+    file_bytes: bytes,
+    mime_type: str,
+) -> LabReportResult:
+    api_key = get_config_value("GEMINI_API_KEY")
+    if api_key:
+        try:
+            return analyze_lab_report_with_gemini(profile, result, file_name, file_bytes, mime_type, api_key)
+        except Exception:
+            pass
+    text = extract_report_text(file_name, file_bytes, mime_type)
+    return heuristic_lab_report_analysis(text)
+
+
+def analyze_lab_report_with_gemini(
+    profile: UserProfile,
+    result: AnalysisResult,
+    file_name: str,
+    file_bytes: bytes,
+    mime_type: str,
+    api_key: str,
+) -> LabReportResult:
+    model = get_config_value("GEMINI_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash"
+    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    prompt = {
+        "profile": asdict(profile),
+        "screening_result": asdict(result),
+        "requested_output": {
+            "possible_findings": "possible deficiency or thyroid/metabolic patterns only",
+            "doctor_discussion": "what to ask a dermatologist/qualified clinician",
+            "missing_tests": "important missing values from the recommended hair-loss workup",
+            "summary": "2 short sentences; never claim exact cause",
+        },
+        "recommended_tests": RECOMMENDED_TESTS,
+    }
+    parts: list[dict[str, Any]] = [
+        {
+            "text": (
+                "Review this lab report for possible deficiency patterns relevant to hair shedding. "
+                "Do not diagnose. Do not claim exact cause. Do not recommend medicines or doses. "
+                "Return only JSON with keys: possible_findings, doctor_discussion, missing_tests, summary.\n"
+                + json.dumps(prompt, indent=2)
+            )
+        },
+        {
+            "inline_data": {
+                "mime_type": mime_type,
+                "data": base64.b64encode(file_bytes).decode("ascii"),
+            }
+        },
+    ]
+    payload = {
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
+    }
+    response = requests.post(endpoint, params={"key": api_key}, json=payload, timeout=45)
+    response.raise_for_status()
+    data = response.json()
+    raw_text = (
+        data.get("candidates", [{}])[0]
+        .get("content", {})
+        .get("parts", [{}])[0]
+        .get("text", "")
+    )
+    parsed = parse_json_block(raw_text)
+    return normalize_lab_result(parsed)
+
+
+def heuristic_lab_report_analysis(text: str) -> LabReportResult:
+    lowered = text.lower()
+    findings: list[str] = []
+    doctor_discussion: list[str] = []
+    present_tests: set[str] = set()
+
+    hemoglobin = find_lab_value(lowered, [r"\bhb\b", r"hemoglobin"])
+    ferritin = find_lab_value(lowered, [r"ferritin"])
+    vitamin_d = find_lab_value(lowered, [r"vitamin\s*d", r"25[\s-]?oh"])
+    b12 = find_lab_value(lowered, [r"b12", r"vitamin\s*b12"])
+    tsh = find_lab_value(lowered, [r"\btsh\b"])
+    zinc = find_lab_value(lowered, [r"zinc"])
+
+    if hemoglobin is not None:
+        present_tests.add("CBC with hemoglobin")
+        if hemoglobin < 12:
+            findings.append("Possible low hemoglobin/anemia pattern, which can contribute to shedding.")
+            doctor_discussion.append("Ask whether anemia workup and iron status review are needed.")
+    if ferritin is not None:
+        present_tests.add("Ferritin and iron profile")
+        if ferritin < 30:
+            findings.append("Possible low ferritin/iron stores, a common contributor to hair shedding.")
+            doctor_discussion.append("Ask how to correct iron stores safely and whether the cause of low iron needs evaluation.")
+        elif ferritin < 50:
+            findings.append("Ferritin appears borderline for hair concerns; clinical context matters.")
+    if vitamin_d is not None:
+        present_tests.add("Vitamin D")
+        if vitamin_d < 20:
+            findings.append("Possible vitamin D deficiency pattern.")
+        elif vitamin_d < 30:
+            findings.append("Possible vitamin D insufficiency pattern.")
+    if b12 is not None:
+        present_tests.add("Vitamin B12")
+        if b12 < 300:
+            findings.append("Possible low or borderline vitamin B12 pattern.")
+    if tsh is not None:
+        present_tests.add("TSH / thyroid profile")
+        if tsh < 0.4 or tsh > 4.5:
+            findings.append("Possible thyroid imbalance pattern that should be reviewed clinically.")
+            doctor_discussion.append("Ask whether thyroid follow-up tests are needed.")
+    if zinc is not None:
+        present_tests.add("Zinc")
+        if zinc < 70:
+            findings.append("Possible low zinc pattern.")
+
+    missing_tests = [test for test in RECOMMENDED_TESTS[:6] if test not in present_tests]
+    if not text.strip():
+        findings.append("I could not read enough text from this report. Please upload a clearer PDF/image or type the values.")
+    elif not findings:
+        findings.append("No obvious deficiency pattern was detected from the readable values, but a clinician should interpret the full report.")
+
+    doctor_discussion.append("Bring this report to a dermatologist or qualified clinician before taking supplements or medicines.")
+    summary = (
+        "Report review can suggest possible deficiency patterns, but it cannot prove the exact cause of hair loss. "
+        "Use these notes to guide a doctor visit."
+    )
+    return LabReportResult(
+        possible_findings=dedupe_list(findings)[:5],
+        doctor_discussion=dedupe_list(doctor_discussion)[:4],
+        missing_tests=missing_tests[:6],
+        summary=summary,
+        disclaimer="This report review is informational only and is not a diagnosis. Do not start supplements or medicines without clinician guidance.",
+    )
+
+
+def normalize_lab_result(data: dict[str, Any]) -> LabReportResult:
+    return LabReportResult(
+        possible_findings=[soften_cause(item) for item in ensure_list(data.get("possible_findings"), ["No clear deficiency pattern was identified from the readable report."])[:5]],
+        doctor_discussion=[sanitize_action(item) for item in ensure_list(data.get("doctor_discussion"), ["Discuss the report with a dermatologist or qualified clinician."])[:4]],
+        missing_tests=ensure_list(data.get("missing_tests"), [])[:6],
+        summary=str(data.get("summary", "")).strip() or "Report review completed. This cannot confirm an exact cause.",
+        disclaimer="This report review is informational only and is not a diagnosis. Do not start supplements or medicines without clinician guidance.",
+    )
+
+
+def extract_report_text(file_name: str, file_bytes: bytes, mime_type: str) -> str:
+    if mime_type == "text/plain" or file_name.lower().endswith(".txt"):
+        return file_bytes.decode("utf-8", errors="ignore")
+    if mime_type == "application/pdf" or file_name.lower().endswith(".pdf"):
+        try:
+            from pypdf import PdfReader
+
+            reader = PdfReader(BytesIO(file_bytes))
+            return "\n".join(page.extract_text() or "" for page in reader.pages)
+        except Exception:
+            return ""
+    return ""
+
+
+def find_lab_value(text: str, labels: list[str]) -> float | None:
+    for label in labels:
+        pattern = rf"(?:{label})[^\d]{{0,30}}(\d+(?:\.\d+)?)"
+        match = re.search(pattern, text)
+        if match:
+            try:
+                return float(match.group(1))
+            except ValueError:
+                return None
+    return None
 
 
 def answer_follow_up_with_gemini(
