@@ -18,10 +18,21 @@ Even with uploaded lab reports, the app does not claim an exact cause; it summar
 
 ## Run Locally
 
+Streamlit version:
+
 ```bash
 python -m pip install -r requirements.txt
 python -m streamlit run hair_doctor_app.py
 ```
+
+React version:
+
+```bash
+python -m pip install -r requirements.txt
+python -m uvicorn react_app:app --reload --port 8504
+```
+
+Then open `http://localhost:8504`.
 
 ## Gemini
 
