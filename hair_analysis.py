@@ -77,8 +77,11 @@ Required JSON schema:
 Rules:
 - This is not a diagnosis and must not replace a dermatologist.
 - Keep the output short, practical, and specific.
-- Say "likely" or "may" for causes.
+- Never claim an exact cause. Say "possible", "likely", or "may" for causes.
+- Do not recommend prescription medicines, doses, or starting/stopping medicines.
+- If treatment or medicines may be relevant, tell the user to discuss options with a dermatologist/qualified clinician first.
 - Never identify a person from the photo.
+- If the photo is blurry, too dark, too close, too far, or does not show the scalp/hair clearly, ask for another clear photo.
 - Recommend urgent or clinician review for patchy loss, scalp pain, infection signs, sudden severe shedding,
   children, pregnancy/postpartum concerns, or medication-related shedding.
 """.strip()
@@ -145,8 +148,11 @@ def answer_follow_up_with_gemini(
                 {
                     "text": (
                         "You are a careful hair and scalp assistant. Answer follow-up questions in 2 to 5 short "
-                        "sentences. Be practical and warm. Do not diagnose. Recommend clinician review for sudden, "
-                        "patchy, painful, infected, medication-related, pregnancy/postpartum, or worsening symptoms."
+                        "sentences. Be practical and warm. Never diagnose or claim an exact cause. Do not tell the "
+                        "user to start, stop, or dose any medicine. If medicines or procedures may be relevant, tell "
+                        "the user to discuss them with a dermatologist or qualified clinician first. Recommend "
+                        "clinician review for sudden, patchy, painful, infected, medication-related, pregnancy/"
+                        "postpartum, or worsening symptoms."
                     )
                 }
             ]
@@ -169,6 +175,17 @@ def answer_follow_up_with_gemini(
 
 def heuristic_follow_up(profile: UserProfile, result: AnalysisResult, question: str) -> str:
     lowered = question.lower()
+    if any(word in lowered for word in ["medicine", "medication", "minoxidil", "finasteride", "tablet", "dose", "treatment", "prescription"]):
+        return (
+            "Please do not start or change any hair-loss medicine based only on this AI screening. "
+            "The safer next step is to take this result to a dermatologist or qualified clinician, who can confirm the cause and decide whether any medicine, test, or procedure is appropriate."
+        )
+    if any(word in lowered for word in ["exact", "cause", "diagnosis", "diagnose"]):
+        return (
+            "I cannot confirm the exact cause from a photo and questionnaire alone. "
+            f"The most possible contributor from this screening is: {result.likely_causes[0] if result.likely_causes else 'not clear yet'}. "
+            "A clinician can confirm with scalp examination, history, and tests if needed."
+        )
     if any(word in lowered for word in ["oil", "shampoo", "wash", "routine"]):
         return (
             "Keep the routine simple for 4 to 6 weeks: gentle shampoo, avoid harsh scratching, and do not add many new products at once. "
@@ -192,7 +209,8 @@ def heuristic_follow_up(profile: UserProfile, result: AnalysisResult, question: 
     first_cause = result.likely_causes[0] if result.likely_causes else "your current symptoms"
     return (
         f"Based on this screening, the main thing to explore is: {first_cause} "
-        "Tell me when it started, whether it is patchy or diffuse, and whether you have itching, pain, dandruff, recent illness, or new medicines."
+        "Tell me when it started, whether it is patchy or diffuse, and whether you have itching, pain, dandruff, recent illness, or new medicines. "
+        "For medicines or treatment decisions, please consult a dermatologist first."
     )
 
 
@@ -263,7 +281,7 @@ def review_safety(state: AnalysisState) -> AnalysisState:
         action = "Book a dermatologist or qualified clinician review, especially if this is sudden, painful, patchy, or worsening."
         if action not in result.needed_actions:
             result.needed_actions = [action] + result.needed_actions[:3]
-    state["result"] = result
+    state["result"] = safety_filter_result(result)
     return state
 
 
@@ -325,7 +343,7 @@ def heuristic_analysis(profile: UserProfile, has_photo: bool) -> AnalysisResult:
     if profile.pattern in {"Hairline / temples", "Crown thinning", "Part line widening"}:
         score += 12
         causes.append("The pattern may fit hereditary or hormone-sensitive thinning.")
-        actions.append("Track monthly photos in the same lighting and discuss early treatment options with a dermatologist.")
+        actions.append("Track monthly photos in the same lighting and discuss treatment options with a dermatologist before using any medicine.")
     if profile.pattern in {"Patchy spots", "Sudden heavy shedding"}:
         score += 18
         causes.append("Sudden or patchy loss needs medical review to rule out inflammatory or autoimmune causes.")
@@ -340,7 +358,7 @@ def heuristic_analysis(profile: UserProfile, has_photo: bool) -> AnalysisResult:
     if profile.diet_quality in {"Poor", "Average"}:
         score += 8 if profile.diet_quality == "Poor" else 4
         causes.append("Nutrition gaps may affect protein, iron, zinc, vitamin D, or B12 status.")
-        actions.append("Prioritize protein-rich meals and consider basic blood tests with a clinician.")
+        actions.append("Prioritize protein-rich meals and consider basic blood tests with a clinician before taking supplements.")
     if profile.family_history == "Yes":
         score += 10
         causes.append("Family history raises the chance of pattern-related thinning.")
@@ -360,17 +378,17 @@ def heuristic_analysis(profile: UserProfile, has_photo: bool) -> AnalysisResult:
         causes.append("Inputs suggest mild lifestyle or scalp contributors rather than an obvious high-risk pattern.")
     if not actions:
         actions.append("Keep the scalp routine simple and take monthly progress photos.")
-    actions.append("Seek medical review if shedding is sudden, patchy, painful, or rapidly worsening.")
+    actions.append("Consult a dermatologist or qualified clinician before starting any hair-loss medicine.")
     questions.append("How many hairs do you see on wash days compared with normal days?")
 
     score = max(0, min(100, score))
     level = "Low" if score < 35 else "Medium" if score < 68 else "High"
     confidence = 58 if not has_photo else 64
     summary = (
-        f"Likely {level.lower()} concern ({score}/100). "
-        f"Main possible cause: {causes[0]}"
+        f"{level} concern ({score}/100). "
+        f"Most possible contributor: {causes[0]}"
     )
-    return AnalysisResult(
+    return safety_filter_result(AnalysisResult(
         risk_score=score,
         risk_level=level,
         confidence=confidence,
@@ -379,9 +397,9 @@ def heuristic_analysis(profile: UserProfile, has_photo: bool) -> AnalysisResult:
         follow_up_questions=dedupe_list(questions)[:3],
         photo_observations=observations[:3],
         summary=summary,
-        disclaimer="This is informational screening, not medical diagnosis.",
+        disclaimer="This is informational screening, not medical diagnosis. Consult a qualified clinician before using any medicine.",
         analysis_engine="LangGraph + Local Fallback",
-    )
+    ))
 
 
 def normalize_result(data: dict[str, Any], engine_name: str) -> AnalysisResult:
@@ -390,7 +408,7 @@ def normalize_result(data: dict[str, Any], engine_name: str) -> AnalysisResult:
     level = str(data.get("risk_level", "Medium")).title()
     if level not in {"Low", "Medium", "High"}:
         level = "Medium"
-    return AnalysisResult(
+    return safety_filter_result(AnalysisResult(
         risk_score=score,
         risk_level=level,
         confidence=confidence,
@@ -399,9 +417,54 @@ def normalize_result(data: dict[str, Any], engine_name: str) -> AnalysisResult:
         follow_up_questions=ensure_list(data.get("follow_up_questions"), [])[:3],
         photo_observations=ensure_list(data.get("photo_observations"), [])[:3],
         summary=str(data.get("summary", "")).strip() or "Screening complete.",
-        disclaimer="AI output is informational support only and is not a medical diagnosis.",
+        disclaimer="AI output is informational support only and is not a medical diagnosis. Consult a qualified clinician before using any medicine.",
         analysis_engine=engine_name,
-    )
+    ))
+
+
+def safety_filter_result(result: AnalysisResult) -> AnalysisResult:
+    result.likely_causes = [soften_cause(cause) for cause in result.likely_causes]
+    result.needed_actions = [sanitize_action(action) for action in result.needed_actions]
+    clinician_action = "Consult a dermatologist or qualified clinician before starting any medicine, supplement, or medicated treatment."
+    if clinician_action not in result.needed_actions:
+        result.needed_actions = [clinician_action] + result.needed_actions
+    result.needed_actions = dedupe_list(result.needed_actions)[:4]
+    result.summary = result.summary.replace("diagnosis", "screening result").replace("Diagnosis", "Screening result")
+    if "exact cause" in result.summary.lower():
+        result.summary = "This screening cannot confirm an exact cause. " + result.summary
+    return result
+
+
+def soften_cause(cause: str) -> str:
+    cleaned = cause.strip()
+    lowered = cleaned.lower()
+    if lowered.startswith(("definite ", "confirmed ", "diagnosed ")):
+        cleaned = "Possible " + cleaned.split(" ", 1)[-1]
+    if not lowered.startswith(("possible", "likely", "may", "could")):
+        cleaned = f"Possible {cleaned[0].lower() + cleaned[1:]}" if cleaned else cleaned
+    return cleaned
+
+
+def sanitize_action(action: str) -> str:
+    medicine_terms = [
+        "minoxidil",
+        "finasteride",
+        "dutasteride",
+        "spironolactone",
+        "ketoconazole",
+        "steroid",
+        "tablet",
+        "capsule",
+        "prescription",
+        "dose",
+        "mg",
+        "medicine",
+        "medication",
+    ]
+    lowered = action.lower()
+    if any(term in lowered for term in medicine_terms):
+        return "Discuss medicines, supplements, or medicated shampoos with a dermatologist before using them."
+    return action
 
 
 def parse_json_block(raw_text: str) -> dict[str, Any]:

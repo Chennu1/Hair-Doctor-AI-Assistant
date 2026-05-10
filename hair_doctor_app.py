@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import html
+from io import BytesIO
 from dataclasses import asdict
 
 import streamlit as st
+from PIL import Image, ImageStat, UnidentifiedImageError
 
 from hair_analysis import AnalysisResult, UserProfile, analyze_hair_case, answer_follow_up
 from hair_store import init_store, recent_consultations, save_consultation, upsert_user
@@ -156,6 +158,12 @@ def render_photo_panel() -> tuple[bytes | None, str | None]:
         return None, None
     image_bytes = selected.getvalue()
     st.image(image_bytes, caption="Selected photo", use_container_width=True)
+    quality_notes = photo_quality_notes(image_bytes)
+    if quality_notes:
+        for note in quality_notes:
+            st.warning(note)
+    else:
+        st.success("Photo looks clear enough for screening.")
     return image_bytes, selected.type
 
 
@@ -165,9 +173,34 @@ def validate_profile(profile: UserProfile, image_bytes: bytes | None) -> list[st
         errors.append("Name is required.")
     if not image_bytes:
         errors.append("A hair/scalp photo is required before analysis.")
+    else:
+        errors.extend(photo_quality_notes(image_bytes))
     if profile.age < 16:
         errors.append("For children or teenagers, use this only as notes for a clinician and book an in-person review.")
     return errors
+
+
+def photo_quality_notes(image_bytes: bytes) -> list[str]:
+    try:
+        image = Image.open(BytesIO(image_bytes)).convert("L")
+    except (UnidentifiedImageError, OSError):
+        return ["Please upload or take another clear JPG/PNG photo."]
+
+    width, height = image.size
+    stat = ImageStat.Stat(image)
+    brightness = stat.mean[0]
+    contrast = stat.stddev[0]
+    notes: list[str] = []
+
+    if min(width, height) < 480:
+        notes.append("Photo is too small or low-resolution. Please take another clear photo closer to the scalp/hair area.")
+    if brightness < 45:
+        notes.append("Photo looks too dark. Please retake it in brighter light.")
+    if brightness > 238:
+        notes.append("Photo looks overexposed. Please retake it with softer light so the scalp and hair are visible.")
+    if contrast < 18:
+        notes.append("Photo may be blurry or low-detail. Please retake it with the camera steady and the scalp/hair in focus.")
+    return notes
 
 
 def render_result(result: AnalysisResult) -> None:
@@ -192,15 +225,15 @@ def render_result(result: AnalysisResult) -> None:
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        render_list("Likely Cause", result.likely_causes)
+        render_list("Possible Causes", result.likely_causes)
     with c2:
-        render_list("Needed Now", result.needed_actions)
+        render_list("What To Do Next", result.needed_actions)
     with c3:
         render_list("Follow Up", result.follow_up_questions or ["No extra question needed right now."])
 
     if result.photo_observations:
         render_list("Photo Notes", result.photo_observations)
-    st.caption("This is informational screening only, not a medical diagnosis.")
+    st.caption("This is informational screening only, not a medical diagnosis. Please consult a dermatologist or qualified clinician before using any medicine.")
 
 
 def render_follow_up_chat() -> None:
@@ -208,7 +241,7 @@ def render_follow_up_chat() -> None:
     st.markdown(
         """
         <div class="chat-intro">
-          Ask about routine, food, dandruff, regrowth time, warning signs, or what to do next.
+          Ask about routine, food, dandruff, regrowth time, warning signs, doctor visit, or what to do next.
         </div>
         """,
         unsafe_allow_html=True,
