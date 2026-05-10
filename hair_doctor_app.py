@@ -279,11 +279,12 @@ def render_follow_up_chat(profile: UserProfile) -> None:
 
 
 def render_tests_panel() -> None:
-    st.markdown('<div class="section-title">Tests To Discuss With A Doctor</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Step 2: Tests To Discuss With A Doctor</div>', unsafe_allow_html=True)
     st.markdown(
         """
         <div class="chat-intro">
-          These tests can help a doctor check common deficiency, thyroid, and metabolic patterns linked with shedding. Do not start supplements based only on screening.
+          Show this checklist to a dermatologist or qualified clinician. These tests can help check common deficiency, thyroid, and metabolic patterns linked with shedding.
+          After the tests are done, come back to this app and upload the report in the next section.
         </div>
         """,
         unsafe_allow_html=True,
@@ -297,14 +298,23 @@ def render_tests_panel() -> None:
 
 
 def render_lab_report_panel() -> None:
-    st.markdown('<div class="section-title">Upload Test Report</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Step 3: Upload Lab Reports Here</div>', unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class="upload-callout">
+          <strong>After tests are done:</strong> upload the lab report below as a PDF, JPG, PNG, or TXT file.
+          The app will review possible deficiency patterns and list what to discuss with the doctor.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     report_file = st.file_uploader(
-        "Upload lab report PDF, image, or text file",
+        "Upload completed lab report",
         type=["pdf", "png", "jpg", "jpeg", "txt"],
         key="lab_report_upload",
     )
     if report_file is None:
-        st.caption("After doing tests, upload the report here. The app will look for possible deficiency patterns, not diagnose the exact cause.")
+        st.caption("Upload reports here after testing. The app reviews possible patterns only; it does not diagnose the exact cause.")
         return
 
     if st.button("Review Test Report", use_container_width=True):
@@ -518,6 +528,19 @@ def inject_css() -> None:
           color: var(--soft);
           padding: 10px 12px;
           margin-bottom: 10px;
+        }
+        .upload-callout {
+          border: 1px solid #b8d7cf;
+          background: #ffffff;
+          border-left: 5px solid var(--mint);
+          border-radius: 8px;
+          color: var(--ink);
+          padding: 12px 14px;
+          margin: 4px 0 12px;
+          box-shadow: 0 8px 20px rgba(24, 33, 31, .05);
+        }
+        .upload-callout strong {
+          color: var(--mint);
         }
         section[data-testid="stSidebar"] {
           display: none;
