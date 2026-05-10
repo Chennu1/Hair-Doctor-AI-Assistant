@@ -101,6 +101,101 @@ def analyze_hair_case(
     return final_state["result"]
 
 
+def answer_follow_up(
+    profile: UserProfile,
+    result: AnalysisResult,
+    question: str,
+    history: list[dict[str, str]] | None = None,
+) -> str:
+    question = question.strip()
+    if not question:
+        return "Ask me anything about your result, routine, symptoms, or what to do next."
+
+    api_key = get_config_value("GEMINI_API_KEY")
+    if api_key:
+        try:
+            return answer_follow_up_with_gemini(profile, result, question, history or [], api_key)
+        except Exception:
+            pass
+    return heuristic_follow_up(profile, result, question)
+
+
+def answer_follow_up_with_gemini(
+    profile: UserProfile,
+    result: AnalysisResult,
+    question: str,
+    history: list[dict[str, str]],
+    api_key: str,
+) -> str:
+    model = get_config_value("GEMINI_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash"
+    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    conversation = "\n".join(
+        f"{message.get('role', 'user')}: {message.get('content', '')}"
+        for message in history[-8:]
+    )
+    prompt = {
+        "profile": asdict(profile),
+        "analysis": asdict(result),
+        "recent_chat": conversation,
+        "user_question": question,
+    }
+    payload = {
+        "system_instruction": {
+            "parts": [
+                {
+                    "text": (
+                        "You are a careful hair and scalp assistant. Answer follow-up questions in 2 to 5 short "
+                        "sentences. Be practical and warm. Do not diagnose. Recommend clinician review for sudden, "
+                        "patchy, painful, infected, medication-related, pregnancy/postpartum, or worsening symptoms."
+                    )
+                }
+            ]
+        },
+        "contents": [{"role": "user", "parts": [{"text": json.dumps(prompt, indent=2)}]}],
+        "generationConfig": {"temperature": 0.35},
+    }
+    response = requests.post(endpoint, params={"key": api_key}, json=payload, timeout=30)
+    response.raise_for_status()
+    data = response.json()
+    answer = (
+        data.get("candidates", [{}])[0]
+        .get("content", {})
+        .get("parts", [{}])[0]
+        .get("text", "")
+        .strip()
+    )
+    return answer or heuristic_follow_up(profile, result, question)
+
+
+def heuristic_follow_up(profile: UserProfile, result: AnalysisResult, question: str) -> str:
+    lowered = question.lower()
+    if any(word in lowered for word in ["oil", "shampoo", "wash", "routine"]):
+        return (
+            "Keep the routine simple for 4 to 6 weeks: gentle shampoo, avoid harsh scratching, and do not add many new products at once. "
+            "If dandruff, itching, pain, or redness is present, a dermatologist can check whether medicated scalp care is needed."
+        )
+    if any(word in lowered for word in ["diet", "food", "protein", "vitamin", "iron", "b12", "zinc"]):
+        return (
+            "Focus on consistent protein, iron-rich foods, fruits, vegetables, and enough calories. "
+            "If shedding is heavy or long-running, ask a clinician about checking ferritin/iron, vitamin D, B12, thyroid, and zinc rather than guessing supplements."
+        )
+    if any(word in lowered for word in ["doctor", "dermatologist", "serious", "worry", "urgent"]):
+        return (
+            "A clinician review is a good idea if hair loss is sudden, patchy, painful, rapidly worsening, or linked with illness, new medicine, pregnancy, or scalp infection signs. "
+            f"Your current screening level is {result.risk_level.lower()}, so use the result as a guide, not a diagnosis."
+        )
+    if any(word in lowered for word in ["time", "recover", "regrow", "long"]):
+        return (
+            "Hair changes usually need patience: shedding from stress or illness may take 8 to 12 weeks to settle, and visible regrowth often takes 3 to 6 months. "
+            "Monthly photos in the same lighting are more reliable than checking every day."
+        )
+    first_cause = result.likely_causes[0] if result.likely_causes else "your current symptoms"
+    return (
+        f"Based on this screening, the main thing to explore is: {first_cause} "
+        "Tell me when it started, whether it is patchy or diffuse, and whether you have itching, pain, dandruff, recent illness, or new medicines."
+    )
+
+
 def build_hair_graph():
     if StateGraph is None:
         return _DirectHairGraph()
@@ -221,9 +316,9 @@ def heuristic_analysis(profile: UserProfile, has_photo: bool) -> AnalysisResult:
     causes: list[str] = []
     actions: list[str] = []
     questions: list[str] = []
-    observations = ["Photo included; local fallback cannot inspect image details."] if has_photo else []
+    observations = ["Photo included. Keep future photos in the same lighting and angle for easier comparison."] if has_photo else []
 
-    if profile.duration in {"More than 6 months", "More than 1 year"}:
+    if profile.duration in {"More than 6 months", "More than 1 year", "More than 3 years", "More than 5 years", "More than 10 years"}:
         score += 10
         causes.append("Long duration may suggest pattern thinning or an ongoing trigger.")
         questions.append("Has the hairline, crown, or part width changed over time?")
@@ -284,7 +379,7 @@ def heuristic_analysis(profile: UserProfile, has_photo: bool) -> AnalysisResult:
         follow_up_questions=dedupe_list(questions)[:3],
         photo_observations=observations[:3],
         summary=summary,
-        disclaimer="Local fallback was used because Gemini is not configured or unavailable. This is informational screening, not medical diagnosis.",
+        disclaimer="This is informational screening, not medical diagnosis.",
         analysis_engine="LangGraph + Local Fallback",
     )
 

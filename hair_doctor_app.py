@@ -5,7 +5,7 @@ from dataclasses import asdict
 
 import streamlit as st
 
-from hair_analysis import AnalysisResult, UserProfile, analyze_hair_case
+from hair_analysis import AnalysisResult, UserProfile, analyze_hair_case, answer_follow_up
 from hair_store import init_store, recent_consultations, save_consultation, upsert_user
 
 
@@ -13,7 +13,7 @@ st.set_page_config(
     page_title="Hair Doctor AI",
     page_icon="HD",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 
@@ -25,14 +25,9 @@ def main() -> None:
 
 
 def create_guest_user() -> dict[str, str]:
-    with st.sidebar:
-        st.markdown("### Account")
-        st.info("Authentication is off for now.")
-        st.caption("Consultations are saved locally in this app session/store.")
-        guest_name = st.text_input("Guest name", value="Local Guest")
-        user_id = "guest-local"
-        upsert_user(user_id, "", guest_name, "")
-        return {"id": user_id, "email": "", "name": guest_name, "mode": "guest"}
+    user_id = "guest-local"
+    upsert_user(user_id, "", "Guest", "")
+    return {"id": user_id, "email": "", "name": "Guest", "mode": "guest"}
 
 
 def render_shell(user: dict[str, str]) -> None:
@@ -40,14 +35,14 @@ def render_shell(user: dict[str, str]) -> None:
         """
         <section class="hero">
           <div>
-            <span class="eyebrow">LangGraph screening assistant</span>
+            <span class="eyebrow">Hair and scalp check</span>
             <h1>Hair Doctor AI</h1>
-            <p>Upload or click a hair/scalp photo, answer the required fields, and get a short cause-focused screening with practical next steps.</p>
+            <p>Upload or click a hair/scalp photo, answer a few details, and get a short cause-focused screening with practical next steps.</p>
           </div>
           <div class="hero-panel">
-            <span>Free store</span>
-            <strong>SQLite</strong>
-            <small>No login required</small>
+            <span>Quick check</span>
+            <strong>No login</strong>
+            <small>Private, simple, and focused</small>
           </div>
         </section>
         """,
@@ -67,14 +62,16 @@ def render_shell(user: dict[str, str]) -> None:
             for error in errors:
                 st.error(error)
         else:
-            with st.spinner("Running LangGraph analysis..."):
+            with st.spinner("Checking your hair and scalp details..."):
                 result = analyze_hair_case(profile, image_bytes, image_mime)
                 save_consultation(user["id"], profile, result, image_bytes, image_mime)
             st.session_state["last_result"] = asdict(result)
             st.session_state["last_profile"] = asdict(profile)
+            st.session_state["chat_messages"] = []
 
     if st.session_state.get("last_result"):
         render_result(AnalysisResult(**st.session_state["last_result"]))
+        render_follow_up_chat()
 
     render_history(user)
 
@@ -89,7 +86,19 @@ def render_profile_form() -> UserProfile:
     gender = c3.selectbox("Gender", ["Female", "Male", "Non-binary", "Prefer not to say"])
 
     c4, c5 = st.columns(2)
-    duration = c4.selectbox("How long?", ["Less than 1 month", "1 to 3 months", "3 to 6 months", "More than 6 months", "More than 1 year"])
+    duration = c4.selectbox(
+        "How long?",
+        [
+            "Less than 1 month",
+            "1 to 3 months",
+            "3 to 6 months",
+            "More than 6 months",
+            "More than 1 year",
+            "More than 3 years",
+            "More than 5 years",
+            "More than 10 years",
+        ],
+    )
     pattern = c5.selectbox("Main pattern", ["Overall shedding", "Hairline / temples", "Crown thinning", "Part line widening", "Patchy spots", "Sudden heavy shedding", "Breakage"])
 
     c6, c7, c8 = st.columns(3)
@@ -170,10 +179,10 @@ def render_result(result: AnalysisResult) -> None:
           <div class="score-card {level_class}">
             <span>Concern</span>
             <strong>{html.escape(result.risk_level)}</strong>
-            <small>{result.risk_score}/100 risk score · {result.confidence}% confidence</small>
+            <small>{result.risk_score}/100 concern score &middot; {result.confidence}% confidence</small>
           </div>
           <div class="summary-card">
-            <span>{html.escape(result.analysis_engine)}</span>
+            <span>What this may mean</span>
             <p>{html.escape(result.summary)}</p>
           </div>
         </div>
@@ -191,7 +200,36 @@ def render_result(result: AnalysisResult) -> None:
 
     if result.photo_observations:
         render_list("Photo Notes", result.photo_observations)
-    st.caption(result.disclaimer)
+    st.caption("This is informational screening only, not a medical diagnosis.")
+
+
+def render_follow_up_chat() -> None:
+    st.markdown('<div class="section-title">Ask Follow-Up Questions</div>', unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class="chat-intro">
+          Ask about routine, food, dandruff, regrowth time, warning signs, or what to do next.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    messages = st.session_state.setdefault("chat_messages", [])
+    for message in messages:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+
+    prompt = st.chat_input("Ask a follow-up question about this analysis")
+    if prompt:
+        profile = UserProfile(**st.session_state["last_profile"])
+        result = AnalysisResult(**st.session_state["last_result"])
+        messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.write(prompt)
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                answer = answer_follow_up(profile, result, prompt, messages)
+            st.write(answer)
+        messages.append({"role": "assistant", "content": answer})
 
 
 def render_list(title: str, items: list[str]) -> None:
@@ -216,8 +254,8 @@ def render_history(user: dict[str, str]) -> None:
             result = row["result"]
             profile = row["profile"]
             st.markdown(
-                f"**{html.escape(profile.get('name', 'Unknown'))}** · "
-                f"{html.escape(row['created_at'])} · "
+                f"**{html.escape(profile.get('name', 'Unknown'))}** &middot; "
+                f"{html.escape(row['created_at'])} &middot; "
                 f"{html.escape(result.get('risk_level', ''))} ({result.get('risk_score', 0)}/100)"
             )
             st.caption(html.escape(result.get("summary", "")))
@@ -360,6 +398,20 @@ def inject_css() -> None:
           border-radius: 8px;
           min-height: 46px;
           font-weight: 800;
+        }
+        .chat-intro {
+          border: 1px solid var(--line);
+          background: #eef7f4;
+          border-radius: 8px;
+          color: var(--soft);
+          padding: 10px 12px;
+          margin-bottom: 10px;
+        }
+        section[data-testid="stSidebar"] {
+          display: none;
+        }
+        div[data-testid="collapsedControl"] {
+          display: none;
         }
         @media (max-width: 820px) {
           .main .block-container { padding: 1rem; }
