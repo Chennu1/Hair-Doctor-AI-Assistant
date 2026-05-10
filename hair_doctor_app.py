@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import html
 from dataclasses import asdict
-from typing import Any
 
 import streamlit as st
 
@@ -21,50 +20,19 @@ st.set_page_config(
 def main() -> None:
     init_store()
     inject_css()
-    user = authenticate()
+    user = create_guest_user()
     render_shell(user)
 
 
-def authenticate() -> dict[str, str]:
-    auth_ready = has_auth_config()
-    streamlit_user = getattr(st, "user", None)
-    is_logged_in = bool(getattr(streamlit_user, "is_logged_in", False))
-
+def create_guest_user() -> dict[str, str]:
     with st.sidebar:
         st.markdown("### Account")
-        if auth_ready:
-            if is_logged_in:
-                email = str(get_user_value(streamlit_user, "email", ""))
-                name = str(get_user_value(streamlit_user, "name", email or "Google user"))
-                picture = str(get_user_value(streamlit_user, "picture", ""))
-                st.success(f"Signed in as {name}")
-                st.button("Sign out", on_click=st.logout, use_container_width=True)
-                user_id = email or str(get_user_value(streamlit_user, "sub", "google-user"))
-                upsert_user(user_id, email, name, picture)
-                return {"id": user_id, "email": email, "name": name, "mode": "google"}
-            st.caption("Sign in to save consultations under your Google account.")
-            st.button("Sign in with Google", on_click=st.login, type="primary", use_container_width=True)
-            st.stop()
-
-        st.warning("Google login is not configured yet.")
-        st.caption("The app is running in local guest mode. Add `.streamlit/secrets.toml` to enable Google sign-in.")
+        st.info("Authentication is off for now.")
+        st.caption("Consultations are saved locally in this app session/store.")
         guest_name = st.text_input("Guest name", value="Local Guest")
         user_id = "guest-local"
         upsert_user(user_id, "", guest_name, "")
         return {"id": user_id, "email": "", "name": guest_name, "mode": "guest"}
-
-
-def has_auth_config() -> bool:
-    try:
-        return "auth" in st.secrets
-    except Exception:
-        return False
-
-
-def get_user_value(user: Any, key: str, default: Any = "") -> Any:
-    if hasattr(user, "get"):
-        return user.get(key, default)
-    return getattr(user, key, default)
 
 
 def render_shell(user: dict[str, str]) -> None:
@@ -79,7 +47,7 @@ def render_shell(user: dict[str, str]) -> None:
           <div class="hero-panel">
             <span>Free store</span>
             <strong>SQLite</strong>
-            <small>Google account identity when configured</small>
+            <small>No login required</small>
           </div>
         </section>
         """,
