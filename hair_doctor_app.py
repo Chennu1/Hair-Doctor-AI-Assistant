@@ -80,10 +80,11 @@ def render_shell(user: dict[str, str]) -> None:
             st.session_state["chat_messages"] = []
 
     if st.session_state.get("last_result"):
-        render_result(AnalysisResult(**st.session_state["last_result"]))
+        active_profile = UserProfile(**st.session_state["last_profile"])
+        render_result(AnalysisResult(**st.session_state["last_result"]), active_profile)
         render_tests_panel()
         render_lab_report_panel()
-        render_follow_up_chat()
+        render_follow_up_chat(active_profile)
 
     render_history(user)
 
@@ -213,20 +214,21 @@ def photo_quality_notes(image_bytes: bytes) -> list[str]:
     return notes
 
 
-def render_result(result: AnalysisResult) -> None:
+def render_result(result: AnalysisResult, profile: UserProfile) -> None:
     level_class = result.risk_level.lower()
-    st.markdown('<div class="section-title">Short Analysis</div>', unsafe_allow_html=True)
+    display_name = html.escape(profile.name or "there")
+    st.markdown(f'<div class="section-title">{display_name}\'s Short Analysis</div>', unsafe_allow_html=True)
     st.markdown(
         f"""
         <div class="result-grid">
           <div class="score-card {level_class}">
-            <span>Concern</span>
+            <span>{display_name}'s concern</span>
             <strong>{html.escape(result.risk_level)}</strong>
             <small>{result.risk_score}/100 concern score &middot; {result.confidence}% confidence</small>
           </div>
           <div class="summary-card">
             <span>What this may mean</span>
-            <p>{html.escape(result.summary)}</p>
+            <p>{display_name}, {html.escape(result.summary[:1].lower() + result.summary[1:] if result.summary else "this screening is complete.")}</p>
           </div>
         </div>
         """,
@@ -246,12 +248,13 @@ def render_result(result: AnalysisResult) -> None:
     st.caption("This is informational screening only, not a medical diagnosis. Please consult a dermatologist or qualified clinician before using any medicine.")
 
 
-def render_follow_up_chat() -> None:
-    st.markdown('<div class="section-title">Ask Follow-Up Questions</div>', unsafe_allow_html=True)
+def render_follow_up_chat(profile: UserProfile) -> None:
+    display_name = html.escape(profile.name or "this person")
+    st.markdown(f'<div class="section-title">Ask Follow-Up Questions For {display_name}</div>', unsafe_allow_html=True)
     st.markdown(
-        """
+        f"""
         <div class="chat-intro">
-          Ask about routine, food, dandruff, regrowth time, warning signs, doctor visit, or what to do next.
+          Ask about {display_name}'s routine, food, dandruff, regrowth time, warning signs, doctor visit, or what to do next.
         </div>
         """,
         unsafe_allow_html=True,
